@@ -358,6 +358,66 @@
     font-family: inherit;
   }
   .btn-logout:hover { color: var(--text); border-color: var(--muted); }
+
+  /* 使用量バッジ */
+  .usage-badge {
+    padding: 4px 10px;
+    border: 1px solid var(--accent);
+    border-radius: 20px;
+    background: rgba(0,229,255,0.08);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .usage-badge:hover { background: rgba(0,229,255,0.18); }
+  .usage-badge.warn { border-color: #ffab00; background: rgba(255,171,0,0.12); color: #ffab00; }
+  .usage-badge.full { border-color: #ff5252; background: rgba(255,82,82,0.15); color: #ff5252; }
+
+  /* プランモーダル */
+  .plan-status {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+  .plan-current {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .plan-current-name { font-size: 14px; font-weight: 700; color: var(--text); }
+  .plan-usage { font-size: 20px; font-weight: 700; color: var(--accent); }
+  .plan-reset { font-size: 11px; color: var(--muted); }
+
+  .plan-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .plan-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .plan-item.current { border-color: var(--accent); background: rgba(0,229,255,0.05); }
+  .plan-item-left { display: flex; flex-direction: column; gap: 2px; }
+  .plan-item-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .plan-item-detail { font-size: 11px; color: var(--muted); }
+  .plan-item-action {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid;
+    font-family: inherit;
+  }
+  .plan-action-current { border-color: var(--accent); color: var(--accent); background: transparent; cursor: default; }
+  .plan-action-soon { border-color: var(--muted); color: var(--muted); background: transparent; cursor: not-allowed; opacity: 0.65; }
 </style>
 </head>
 <body>
@@ -367,6 +427,9 @@
   <div class="header">
     <div class="logo">Receipt<span>Scan</span></div>
     <div class="header-right">
+      <button class="usage-badge" id="usageBadge" onclick="openPlanModal()" style="display:none" title="プラン詳細">
+        <span id="usageText">- / -</span>
+      </button>
       <div class="count-badge" id="countBadge">0 枚</div>
       <button class="btn-logout" id="btnLogout" onclick="signOut()" style="display:none">ログアウト</button>
     </div>
@@ -451,6 +514,24 @@
     </div>
   </div>
 
+  <!-- プランモーダル -->
+  <div class="modal-backdrop" id="planModal">
+    <div class="modal">
+      <div class="modal-title">📊 プランと使用量</div>
+      <div class="plan-status">
+        <div class="plan-current">
+          <div class="plan-current-name" id="planCurrentName">無料プラン</div>
+          <div class="plan-usage" id="planUsageDetail">0 / 5 回</div>
+        </div>
+        <div class="plan-reset" id="planResetText">次回リセット: -</div>
+      </div>
+      <div class="plan-list" id="planList"></div>
+      <div class="modal-btns">
+        <button class="btn-modal-cancel" onclick="closePlanModal()" style="flex:1">閉じる</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 編集モーダル -->
   <div class="modal-backdrop" id="editModal">
     <div class="modal">
@@ -506,6 +587,7 @@ const AUTH_CONFIG = {
 
 let authToken = null;
 let authUser = null;
+let userState = null;  // /me のレスポンス（plan, limit, used, remaining, plans 等）
 
 function showLogin(msg) {
   document.getElementById('loginScreen').classList.remove('hidden');
@@ -516,14 +598,91 @@ function hideLogin() {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('btnLogout').style.display = '';
   document.getElementById('loginError').textContent = '';
+  fetchMe();
 }
 
 function signOut() {
   authToken = null;
   authUser = null;
+  userState = null;
+  document.getElementById('usageBadge').style.display = 'none';
   sessionStorage.removeItem('rs_auth');
   if (stream) stopCamera();
   showLogin();
+}
+
+// ---- 使用量 / プラン ----
+async function fetchMe() {
+  if (!authToken) return;
+  try {
+    const res = await fetch('/.netlify/functions/me', {
+      headers: { 'Authorization': `Bearer ${authToken}` }
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) { signOut(); return; }
+      throw new Error('HTTP ' + res.status);
+    }
+    userState = await res.json();
+    updateUsageBadge();
+  } catch (e) {
+    console.warn('fetchMe failed', e);
+  }
+}
+
+function updateUsageBadge() {
+  const badge = document.getElementById('usageBadge');
+  const text = document.getElementById('usageText');
+  if (!userState) { badge.style.display = 'none'; return; }
+  badge.style.display = '';
+  text.textContent = `${userState.used} / ${userState.limit}`;
+  badge.classList.remove('warn', 'full');
+  if (userState.remaining === 0) badge.classList.add('full');
+  else if (userState.remaining <= Math.max(1, Math.floor(userState.limit * 0.2))) badge.classList.add('warn');
+}
+
+function applyUsageFromResponse(usage) {
+  if (!usage) return;
+  userState = { ...(userState || {}), ...usage };
+  updateUsageBadge();
+}
+
+function nextResetText() {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  jst.setUTCDate(1);
+  jst.setUTCMonth(jst.getUTCMonth() + 1);
+  return `${jst.getUTCMonth() + 1}月1日 0:00 (JST)`;
+}
+
+function openPlanModal() {
+  if (!userState) return;
+  document.getElementById('planCurrentName').textContent = (userState.planLabel || '無料') + 'プラン';
+  document.getElementById('planUsageDetail').textContent = `${userState.used} / ${userState.limit} 回`;
+  document.getElementById('planResetText').textContent = `次回リセット: ${nextResetText()}`;
+  const list = document.getElementById('planList');
+  list.innerHTML = '';
+  const plans = userState.plans || [];
+  for (const p of plans) {
+    const isCurrent = p.id === userState.plan;
+    const price = p.priceJpy === 0 ? '無料' : `¥${p.priceJpy} / 月`;
+    const action = isCurrent
+      ? `<span class="plan-item-action plan-action-current">現在のプラン</span>`
+      : `<button class="plan-item-action plan-action-soon" disabled>近日提供</button>`;
+    const item = document.createElement('div');
+    item.className = 'plan-item' + (isCurrent ? ' current' : '');
+    item.innerHTML = `
+      <div class="plan-item-left">
+        <div class="plan-item-name">${p.label}　${price}</div>
+        <div class="plan-item-detail">${p.limit.toLocaleString()} 回 / 月</div>
+      </div>
+      ${action}`;
+    list.appendChild(item);
+  }
+  document.getElementById('planModal').classList.add('open');
+}
+
+function closePlanModal() {
+  document.getElementById('planModal').classList.remove('open');
 }
 
 function persistAuth() {
@@ -1068,9 +1227,16 @@ async function analyzeReceipt(base64Image) {
     signOut();
     throw new Error('セッションが切れました。再ログインしてください');
   }
+  if (response.status === 402) {
+    const usage = await response.json();
+    applyUsageFromResponse(usage);
+    openPlanModal();
+    throw new Error('今月の利用上限に達しました');
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
   const data = await response.json();
+  if (data._usage) applyUsageFromResponse(data._usage);
   const text = data.content?.find(b => b.type === 'text')?.text || '{}';
   const clean = text.replace(/```json|```/g, '').trim();
   const parsed = JSON.parse(clean);
@@ -1185,6 +1351,9 @@ function saveEdit() {
 // モーダル外タップで閉じる
 document.getElementById('editModal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeEditModal();
+});
+document.getElementById('planModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closePlanModal();
 });
 
 function replaceWithError(id, num, msg) {

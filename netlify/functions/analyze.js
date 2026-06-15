@@ -1,75 +1,38 @@
-const { jwtVerify, createRemoteJWKSet } = require('jose');
-
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const APPLE_CLIENT_ID = process.env.APPLE_CLIENT_ID;
-const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '')
-  .split(',')
-  .map(s => s.trim().toLowerCase())
-  .filter(Boolean);
-
-const googleJWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
-const appleJWKS = createRemoteJWKSet(new URL('https://appleid.apple.com/auth/keys'));
-
-function peekIssuer(token) {
-  const parts = token.split('.');
-  if (parts.length < 2) return null;
-  try {
-    const json = Buffer.from(parts[1], 'base64').toString('utf8');
-    return JSON.parse(json).iss;
-  } catch {
-    return null;
-  }
-}
-
-async function verifyIdToken(token) {
-  const iss = peekIssuer(token);
-  if (iss === 'https://accounts.google.com' || iss === 'accounts.google.com') {
-    if (!GOOGLE_CLIENT_ID) throw new Error('GOOGLE_CLIENT_ID not configured');
-    const { payload } = await jwtVerify(token, googleJWKS, {
-      issuer: ['https://accounts.google.com', 'accounts.google.com'],
-      audience: GOOGLE_CLIENT_ID
-    });
-    return { ...payload, provider: 'google' };
-  }
-  if (iss === 'https://appleid.apple.com') {
-    if (!APPLE_CLIENT_ID) throw new Error('APPLE_CLIENT_ID not configured');
-    const { payload } = await jwtVerify(token, appleJWKS, {
-      issuer: 'https://appleid.apple.com',
-      audience: APPLE_CLIENT_ID
-    });
-    return { ...payload, provider: 'apple' };
-  }
-  throw new Error('Unknown token issuer');
-}
+const { authenticate } = require('./_lib/auth');
+const { loadUser, saveUser, summarizeUser, planInfo } = require('./_lib/usage');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
-  if (!authHeader.startsWith('Bearer ')) {
-    return { statusCode: 401, body: JSON.stringify({ error: 'Missing bearer token' }) };
-  }
-  const token = authHeader.slice(7);
-
-  let claims;
-  try {
-    claims = await verifyIdToken(token);
-  } catch (e) {
-    return { statusCode: 401, body: JSON.stringify({ error: 'Invalid token: ' + e.message }) };
-  }
-
-  if (ALLOWED_EMAILS.length) {
-    const email = (claims.email || '').toLowerCase();
-    if (!email || !ALLOWED_EMAILS.includes(email)) {
-      return { statusCode: 403, body: JSON.stringify({ error: 'Email not in allowlist' }) };
-    }
-  }
+  const authResult = await authenticate(event);
+  if (authResult.error) return authResult.error;
+  const claims = authResult.claims;
 
   const apiKey = process.env.WITKEY_RS_KEY;
   if (!apiKey) {
     return { statusCode: 500, body: JSON.stringify({ error: 'API key not configured' }) };
+  }
+
+  // ---- 使用量チェック ----
+  let userCtx;
+  try {
+    userCtx = await loadUser(claims.email);
+  } catch (e) {
+    return { statusCode: 500, body: JSON.stringify({ error: 'Storage error: ' + e.message }) };
+  }
+  const { user, store, key } = userCtx;
+  const info = planInfo(user.plan);
+  if (user.usedCount >= info.limit) {
+    return {
+      statusCode: 402,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        error: 'Usage limit reached',
+        ...summarizeUser(user)
+      })
+    };
   }
 
   try {
@@ -102,10 +65,20 @@ exports.handler = async (event) => {
     });
 
     const data = await response.json();
+
+    // 成功時のみカウント加算
+    if (response.ok) {
+      user.usedCount += 1;
+      try { await saveUser(store, key, user); } catch (e) { /* ログのみ */ }
+    }
+
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      body: JSON.stringify({
+        ...data,
+        _usage: summarizeUser(user)
+      })
     };
   } catch (e) {
     return {
