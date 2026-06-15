@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>レシート連続スキャン</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0a0f1e;
+    --surface: #111827;
+    --accent: #00e5ff;
+    --accent2: #7c3aed;
+    --success: #00c853;
+    --text: #f0f4ff;
+    --muted: #64748b;
+    --border: rgba(0,229,255,0.15);
+  }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Hiragino Sans', 'Yu Gothic UI', sans-serif;
+  }
+
+  /* ======== 全体レイアウト ======== */
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    max-width: 480px;
+    margin: 0 auto;
+  }
+
+  /* ---- ヘッダー ---- */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: rgba(10,15,30,0.95);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  .logo { font-size: 16px; font-weight: 700; color: var(--accent); }
+  .logo span { color: var(--text); }
+  .count-badge { background: var(--accent2); color: #fff; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 20px; }
+
+  /* ---- 分割スキャンバナー ---- */
+  #splitIndicator {
+    display: none;
+    background: var(--accent2);
+    color: #fff;
+    text-align: center;
+    padding: 7px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  /* ---- 明暗スライダー（上部・横） ---- */
+  .slider-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    flex-shrink: 0;
+    background: rgba(10,15,30,0.7);
+  }
+  .slider-top label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .slider-top input[type=range] { flex: 1; accent-color: var(--accent); height: 4px; }
+  .slider-top span { font-size: 11px; color: var(--accent); min-width: 36px; text-align: right; }
+
+  /* ---- カメラ中段（左スライダー＋映像＋右スライダー） ---- */
+  .camera-row {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+
+  /* 左・右の縦スライダー列 */
+  .slider-side {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 44px;
+    flex-shrink: 0;
+    background: rgba(10,15,30,0.7);
+    padding: 8px 0;
+    z-index: 2;
+  }
+  .slider-side label {
+    font-size: 10px;
+    color: var(--muted);
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    letter-spacing: 1px;
+  }
+  .slider-side input[type=range] {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    accent-color: var(--accent);
+    flex: 1;
+    width: 4px;
+    max-height: 160px;
+  }
+  .slider-side span { font-size: 10px; color: var(--accent); }
+
+  /* カメラ映像エリア */
+  .camera-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    background: #000;
+  }
+
+  #video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* スキャンオーバーレイ */
+  .scan-overlay { position: absolute; inset: 0; pointer-events: none; }
+
+  .corner { position: absolute; width: 24px; height: 24px; border-color: var(--accent); border-style: solid; }
+  .corner.tl { top: 10%; left: 6%; border-width: 3px 0 0 3px; border-radius: 4px 0 0 0; }
+  .corner.tr { top: 10%; right: 6%; border-width: 3px 3px 0 0; border-radius: 0 4px 0 0; }
+  .corner.bl { bottom: 18%; left: 6%; border-width: 0 0 3px 3px; border-radius: 0 0 0 4px; }
+  .corner.br { bottom: 18%; right: 6%; border-width: 0 3px 3px 0; border-radius: 0 0 4px 0; }
+
+  .scan-line { position: absolute; left: 6%; right: 6%; height: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); top: 10%; animation: scanMove 2s ease-in-out infinite; opacity: 0; transition: opacity 0.3s; }
+  .scan-line.active { opacity: 1; }
+  @keyframes scanMove { 0% { top: 11%; } 50% { top: 81%; } 100% { top: 11%; } }
+
+  .detect-ring { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -55%); width: 78%; aspect-ratio: 0.6/1; border: 2px solid transparent; border-radius: 8px; transition: border-color 0.2s, box-shadow 0.2s; pointer-events: none; }
+  .detect-ring.detected { border-color: var(--accent); box-shadow: 0 0 20px rgba(0,229,255,0.3), inset 0 0 20px rgba(0,229,255,0.05); }
+  .detect-ring.stable { border-color: var(--success); box-shadow: 0 0 24px rgba(0,200,83,0.5), inset 0 0 20px rgba(0,200,83,0.08); }
+
+  .progress-ring-wrap { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -55%); width: 80px; height: 80px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+  .progress-ring-wrap.visible { opacity: 1; }
+  .progress-ring-wrap svg { transform: rotate(-90deg); }
+  .progress-circle { fill: none; stroke: var(--success); stroke-width: 4; stroke-dasharray: 251; stroke-dashoffset: 251; stroke-linecap: round; transition: stroke-dashoffset 0.05s linear; }
+
+  .ok-flash { position: absolute; inset: 0; background: rgba(0,200,83,0.25); display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+  .ok-flash.show { opacity: 1; }
+  .ok-icon { font-size: 64px; filter: drop-shadow(0 0 20px var(--success)); }
+
+  /* ステータス（映像下部） */
+  .status-overlay { position: absolute; bottom: 0; left: 0; right: 0; padding: 12px 16px 14px; background: linear-gradient(transparent, rgba(10,15,30,0.92)); text-align: center; pointer-events: none; }
+  .status-text { font-size: 14px; font-weight: 600; }
+  .status-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+  /* スキャン開始ボタン（映像中央） */
+  .btn-start-overlay {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 18px 32px;
+    border: none;
+    border-radius: 16px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    background: var(--accent);
+    color: var(--bg);
+    box-shadow: 0 4px 24px rgba(0,229,255,0.4);
+    transition: transform 0.1s, opacity 0.2s;
+    z-index: 5;
+  }
+  .btn-start-overlay:active { transform: translate(-50%,-50%) scale(0.96); }
+  .btn-start-overlay:disabled { background: var(--muted); box-shadow: none; }
+
+  /* 停止・ライトボタン（右下） */
+  .btns-bottom-right {
+    position: absolute;
+    bottom: 60px;
+    right: 12px;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 5;
+  }
+  .btns-bottom-right.visible { display: flex; }
+
+  .btn-round {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: rgba(10,15,30,0.75);
+    backdrop-filter: blur(8px);
+    color: var(--text);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .btn-round:active { transform: scale(0.93); }
+  .btn-round.torch-on { border-color: #ffab00; background: rgba(255,171,0,0.2); }
+
+  /* ---- 結果リスト（下部スクロール） ---- */
+  .results-section {
+    flex-shrink: 0;
+    max-height: 35vh;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .results-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; position: sticky; top: 0; background: var(--bg); z-index: 1; }
+  .results-title { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .btn-export { padding: 6px 12px; border: 1px solid var(--accent); border-radius: 8px; background: transparent; color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+  .btn-export:disabled { opacity: 0.3; cursor: default; }
+
+  .receipt-list { display: flex; flex-direction: column; gap: 10px; padding: 0 12px 16px; }
+  .receipt-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; animation: slideIn 0.3s ease; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .card-header-left { display: flex; flex-direction: column; gap: 2px; }
+  .card-num { font-size: 11px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
+  .card-time { font-size: 11px; color: var(--muted); }
+  .card-actions { display: flex; gap: 6px; }
+  .btn-card { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid; transition: background 0.15s; }
+  .btn-card-edit { border-color: var(--accent); color: var(--accent); background: transparent; }
+  .btn-card-edit:hover { background: rgba(0,229,255,0.1); }
+  .btn-card-del { border-color: #ff5252; color: #ff5252; background: transparent; }
+  .btn-card-del:hover { background: rgba(255,82,82,0.1); }
+  .card-body { display: flex; flex-direction: column; gap: 4px; }
+  .card-row { display: flex; justify-content: space-between; font-size: 12px; }
+  .card-label { color: var(--muted); }
+  .card-val { font-weight: 600; }
+  .card-val.amount { color: var(--accent); font-size: 14px; }
+  .card-val.account { color: #a78bfa; }
+
+  /* ---- 編集モーダル ---- */
+  .modal-backdrop {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 200;
+    align-items: flex-end;
+    justify-content: center;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px 20px 0 0;
+    width: 100%; max-width: 480px;
+    padding: 20px 20px 32px;
+    max-height: 85vh;
+    overflow-y: auto;
+    animation: slideUp 0.25s ease;
+  }
+  @keyframes slideUp { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .modal-title { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: var(--accent); }
+  .modal-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .modal-field label { font-size: 11px; color: var(--muted); }
+  .modal-field input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .modal-field input:focus { border-color: var(--accent); }
+  .modal-btns { display: flex; gap: 10px; margin-top: 16px; }
+  .btn-modal-save {
+    flex: 1; padding: 14px; border: none; border-radius: 10px;
+    background: var(--accent); color: var(--bg);
+    font-size: 15px; font-weight: 700; cursor: pointer;
+  }
+  .btn-modal-cancel {
+    padding: 14px 20px; border: 1px solid var(--border); border-radius: 10px;
+    background: transparent; color: var(--text);
+    font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+
+  .processing-card { background: var(--surface); border: 1px solid rgba(0,229,255,0.2); border-radius: 12px; padding: 14px; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; }
+  .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .processing-text { font-size: 12px; color: var(--muted); }
+
+  .empty-state { text-align: center; padding: 20px; color: var(--muted); font-size: 13px; line-height: 1.8; }
+  .empty-icon { font-size: 32px; margin-bottom: 8px; }
+
+  #captureCanvas { display: none; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ヘッダー -->
+  <div class="header">
+    <div class="logo">Receipt<span>Scan</span></div>
+    <div class="count-badge" id="countBadge">0 枚</div>
+  </div>
+
+  <!-- 分割スキャンバナー -->
+  <div id="splitIndicator">📜 長いレシート：下半分をかざしてください</div>
+
+  <!-- 明暗スライダー（上部） -->
+  <div class="slider-top">
+    <label>明暗</label>
+    <input type="range" id="brightnessSlider" min="50" max="200" value="100" step="10">
+    <span id="brightnessLabel">100%</span>
+  </div>
+
+  <!-- カメラ行：感度（左）＋映像＋認識（右） -->
+  <div class="camera-row">
+
+    <!-- 感度スライダー（左・縦） -->
+    <div class="slider-side">
+      <label>感度</label>
+      <input type="range" id="sensitivitySlider" min="1" max="5" value="3">
+      <span id="sensitivityLabel">中</span>
+    </div>
+
+    <!-- カメラ映像 -->
+    <div class="camera-wrap" id="cameraWrap">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="captureCanvas"></canvas>
+
+      <div class="scan-overlay">
+        <div class="corner tl"></div>
+        <div class="corner tr"></div>
+        <div class="corner bl"></div>
+        <div class="corner br"></div>
+        <div class="scan-line" id="scanLine"></div>
+        <div class="detect-ring" id="detectRing"></div>
+        <div class="progress-ring-wrap" id="progressWrap">
+          <svg width="80" height="80" viewBox="0 0 90 90">
+            <circle class="progress-circle" id="progressCircle" cx="45" cy="45" r="40"/>
+          </svg>
+        </div>
+        <div class="ok-flash" id="okFlash">
+          <div class="ok-icon">✅</div>
+        </div>
+        <div class="status-overlay">
+          <div class="status-text" id="statusText">📷 カメラを起動してください</div>
+          <div class="status-sub" id="statusSub">「スキャン開始」を押してください</div>
+        </div>
+      </div>
+
+      <!-- スキャン開始ボタン（中央） -->
+      <button class="btn-start-overlay" id="btnStart" onclick="startCamera()">📷 スキャン開始</button>
+
+      <!-- 停止・ライトボタン（右下） -->
+      <div class="btns-bottom-right" id="btnsBottomRight">
+        <button class="btn-round" id="btnTorch" onclick="toggleTorch()" style="display:none" title="ライト">🔦</button>
+        <button class="btn-round" id="btnStop" onclick="stopCamera()" title="停止">⏹</button>
+      </div>
+    </div>
+
+    <!-- 認識スライダー（右・縦） -->
+    <div class="slider-side">
+      <label>認識</label>
+      <input type="range" id="thresholdSlider" min="50" max="95" value="80" step="5">
+      <span id="thresholdLabel">80%</span>
+    </div>
+
+  </div><!-- /camera-row -->
+
+  <!-- 結果リスト -->
+  <div class="results-section">
+    <div class="results-header">
+      <div class="results-title">認識済みレシート</div>
+      <button class="btn-export" id="btnExport" onclick="exportCSV()" disabled>ZIP 出力</button>
+    </div>
+    <div class="receipt-list" id="receiptList">
+      <div class="empty-state">
+        <div class="empty-icon">🧾</div>
+        レシートをかざすと自動認識します
+      </div>
+    </div>
+  </div>
+
+  <!-- 編集モーダル -->
+  <div class="modal-backdrop" id="editModal">
+    <div class="modal">
+      <div class="modal-title">✏️ レシートを編集</div>
+      <div class="modal-field"><label>日付</label><input id="edit-date" type="text" placeholder="YYYY/MM/DD"></div>
+      <div class="modal-field"><label>店舗名</label><input id="edit-store" type="text"></div>
+      <div class="modal-field"><label>金額（税込）</label><input id="edit-amount" type="number"></div>
+      <div class="modal-field"><label>消費税</label><input id="edit-tax" type="number"></div>
+      <div class="modal-field"><label>勘定科目</label><input id="edit-account" type="text"></div>
+      <div class="modal-field"><label>経費区分</label><input id="edit-category" type="text"></div>
+      <div class="modal-field"><label>摘要</label><input id="edit-memo" type="text"></div>
+      <div class="modal-btns">
+        <button class="btn-modal-cancel" onclick="closeEditModal()">キャンセル</button>
+        <button class="btn-modal-save" onclick="saveEdit()">保存</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /app -->
+
+<script>
+let stream = null;
+let isScanning = false;
+let stabilityFrames = 0;
+let captureInProgress = false;
+let receipts = [];
+let receiptCount = 0;
+let edgeDetectInterval = null;
+let sensitivity = 3;
+let occlusionThreshold = 0.80;
+let brightnessValue = 100;
+let torchOn = false;
+
+// 長いレシート分割スキャン用
+let pendingTopImage = null;
+let scanMode = 'normal';
+
+// 認識画像保存（cardId → base64）
+const capturedImages = new Map();
+
+const STABILITY_THRESHOLD = 15;
+const EDGE_CHECK_INTERVAL = 100;
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('captureCanvas');
+const ctx = canvas.getContext('2d');
+const statusText = document.getElementById('statusText');
+const statusSub = document.getElementById('statusSub');
+const detectRing = document.getElementById('detectRing');
+const scanLine = document.getElementById('scanLine');
+const progressWrap = document.getElementById('progressWrap');
+const progressCircle = document.getElementById('progressCircle');
+const okFlash = document.getElementById('okFlash');
+const countBadge = document.getElementById('countBadge');
+const receiptList = document.getElementById('receiptList');
+const btnStart = document.getElementById('btnStart');
+const btnStop = document.getElementById('btnStop');
+const btnExport = document.getElementById('btnExport');
+
+document.getElementById('sensitivitySlider').addEventListener('input', (e) => {
+  sensitivity = parseInt(e.target.value);
+  const labels = ['', '低', 'やや低', '中', 'やや高', '高'];
+  document.getElementById('sensitivityLabel').textContent = labels[sensitivity];
+});
+
+document.getElementById('thresholdSlider').addEventListener('input', (e) => {
+  occlusionThreshold = parseInt(e.target.value) / 100;
+  document.getElementById('thresholdLabel').textContent = `${e.target.value}%`;
+});
+
+document.getElementById('brightnessSlider').addEventListener('input', (e) => {
+  brightnessValue = parseInt(e.target.value);
+  document.getElementById('brightnessLabel').textContent = `${brightnessValue}%`;
+  video.style.filter = `brightness(${brightnessValue}%)`;
+});
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } }
+    });
+    video.srcObject = stream;
+    video.style.filter = `brightness(${brightnessValue}%)`;
+    isScanning = true;
+    document.getElementById('btnStart').style.display = 'none';
+    document.getElementById('btnsBottomRight').classList.add('visible');
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) document.getElementById('btnTorch').style.display = 'flex';
+    scanLine.classList.add('active');
+    setStatus('🔍 レシートをかざしてください', 'レシート全体が画面内に入るようにしてください');
+    startEdgeDetection();
+  } catch (e) {
+    setStatus('⚠️ カメラにアクセスできません', 'ブラウザの許可設定を確認してください');
+  }
+}
+
+function stopCamera() {
+  isScanning = false;
+  if (torchOn) { toggleTorch(); }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  clearInterval(edgeDetectInterval);
+  scanLine.classList.remove('active');
+  detectRing.className = 'detect-ring';
+  progressWrap.classList.remove('visible');
+  stabilityFrames = 0;
+  captureInProgress = false;
+  document.getElementById('btnStart').style.display = '';
+  document.getElementById('btnsBottomRight').classList.remove('visible');
+  document.getElementById('btnTorch').style.display = 'none';
+  setStatus('📷 カメラを起動してください', '「スキャン開始」を押してください');
+}
+
+async function toggleTorch() {
+  if (!stream) return;
+  const track = stream.getVideoTracks()[0];
+  try {
+    torchOn = !torchOn;
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+    const btn = document.getElementById('btnTorch');
+    btn.textContent = torchOn ? '💡' : '🔦';
+    btn.classList.toggle('torch-on', torchOn);
+  } catch (e) {
+    torchOn = !torchOn;
+    setStatus('⚠️ ライトは非対応です', 'このデバイスはライト制御に対応していません');
+  }
+}
+
+function startEdgeDetection() {
+  edgeDetectInterval = setInterval(checkForReceipt, EDGE_CHECK_INTERVAL);
+}
+
+function checkForReceipt() {
+  if (!isScanning || captureInProgress || !video.videoWidth) return;
+
+  const W = 160, H = 120;
+  canvas.width = W; canvas.height = H;
+  ctx.drawImage(video, 0, 0, W, H);
+  const imageData = ctx.getImageData(0, 0, W, H);
+  const data = imageData.data;
+
+  // ---- STEP1: 白系ピクセルマスク生成 ----
+  // 感度スライダーで白判定の閾値を調整
+  const brightnessThreshold = 195 - sensitivity * 8; // 163〜195
+  const saturationMax = 45 + sensitivity * 6;        // 51〜75
+
+  const whiteMask = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const r = data[i], g = data[i+1], b = data[i+2];
+      const brightness = r * 0.299 + g * 0.587 + b * 0.114;
+      const saturation = Math.max(r, g, b) - Math.min(r, g, b);
+      if (brightness >= brightnessThreshold && saturation <= saturationMax) {
+        whiteMask[y * W + x] = 1;
+      }
+    }
+  }
+
+  // ---- STEP2: レシートのバウンディングボックスを検出 ----
+  // 各辺ごとに「白ピクセルが連続して存在する行/列」を探す
+  // 上辺: 上から走査して白ピクセルが一定割合ある最初の行
+  // 下辺: 下から走査して白ピクセルが一定割合ある最初の行
+  // 左辺: 左から走査して白ピクセルが一定割合ある最初の列
+  // 右辺: 右から走査して白ピクセルが一定割合ある最初の列
+  const LINE_THRESHOLD = 0.30; // 行/列の30%以上が白 → その辺が存在する
+
+  function rowWhiteRatio(y) {
+    let cnt = 0;
+    for (let x = 0; x < W; x++) if (whiteMask[y * W + x]) cnt++;
+    return cnt / W;
+  }
+  function colWhiteRatio(x) {
+    let cnt = 0;
+    for (let y = 0; y < H; y++) if (whiteMask[y * W + x]) cnt++;
+    return cnt / H;
+  }
+
+  // 各辺を画面端から5px余裕を持たせて探す（画面ギリギリ端は除外）
+  const MARGIN = 4;
+  let topEdge = -1, bottomEdge = -1, leftEdge = -1, rightEdge = -1;
+
+  for (let y = MARGIN; y < H - MARGIN; y++) {
+    if (rowWhiteRatio(y) >= LINE_THRESHOLD) { topEdge = y; break; }
+  }
+  for (let y = H - MARGIN - 1; y >= MARGIN; y--) {
+    if (rowWhiteRatio(y) >= LINE_THRESHOLD) { bottomEdge = y; break; }
+  }
+  for (let x = MARGIN; x < W - MARGIN; x++) {
+    if (colWhiteRatio(x) >= LINE_THRESHOLD) { leftEdge = x; break; }
+  }
+  for (let x = W - MARGIN - 1; x >= MARGIN; x--) {
+    if (colWhiteRatio(x) >= LINE_THRESHOLD) { rightEdge = x; break; }
+  }
+
+  // ---- STEP3: どの辺が見えているか判定 ----
+  const EDGE_MARGIN = 6;
+  const topVisible    = topEdge    > EDGE_MARGIN;
+  const bottomVisible = bottomEdge >= 0 && bottomEdge < H - EDGE_MARGIN;
+  const leftVisible   = leftEdge   > EDGE_MARGIN;
+  const rightVisible  = rightEdge  < W - EDGE_MARGIN;
+
+  // レシートがほぼ見えていない
+  if (topEdge < 0 && bottomEdge < 0) { resetDetection(); return; }
+
+  // 左右どちらかが見切れている → ガイド表示してリセット
+  if (!leftVisible || !rightVisible) {
+    const missing = [];
+    if (!leftVisible)  missing.push('左');
+    if (!rightVisible) missing.push('右');
+    setStatus('📄 レシートを画面内に収めてください', `${missing.join('・')}が見切れています`);
+    detectRing.className = 'detect-ring detected';
+    stabilityFrames = Math.max(0, stabilityFrames - 2);
+    return;
+  }
+
+  // ---- STEP4: 長いレシートの分割スキャン判定 ----
+  // 上辺あり・下辺なし → 上半分スキャン（通常 or 長いレシート1枚目）
+  // 上辺なし・下辺あり → 下半分スキャン（長いレシート2枚目）
+  // 上辺あり・下辺あり → 通常の1枚スキャン
+
+  const isTopOnly    = topVisible && !bottomVisible;
+  const isBottomOnly = !topVisible && bottomVisible;
+  const isFullReceipt = topVisible && bottomVisible;
+
+  // 下半分待ちモードなのに上辺があるレシートが来た → 新しいレシートとして扱う
+  if (scanMode === 'waiting_bottom' && isFullReceipt) {
+    scanMode = 'normal';
+    pendingTopImage = null;
+    updateScanModeUI();
+  }
+  if (scanMode === 'waiting_bottom' && isTopOnly) {
+    // 上辺があるレシート = 新しいレシートの上半分 → 前の保留をキャンセル
+    scanMode = 'normal';
+    pendingTopImage = null;
+    updateScanModeUI();
+  }
+
+  // ---- STEP5: 遮蔽チェック（bbox内白ピクセル率）----
+  const bboxW = rightEdge - leftEdge + 1;
+  const bboxH = (bottomEdge >= 0 ? bottomEdge : H - 1) - topEdge + 1;
+  const bboxArea = bboxW * bboxH;
+  if (bboxArea < 200) { resetDetection(); return; }
+
+  let whiteInBbox = 0;
+  const bboxBottom = bottomEdge >= 0 ? bottomEdge : H - 1;
+  for (let y = topEdge; y <= bboxBottom; y++) {
+    for (let x = leftEdge; x <= rightEdge; x++) {
+      if (whiteMask[y * W + x]) whiteInBbox++;
+    }
+  }
+  const visibleRatio = whiteInBbox / bboxArea;
+  const occlusionPct = Math.round((1 - visibleRatio) * 100);
+
+  if (visibleRatio < occlusionThreshold) {
+    const allowedPct = Math.round((1 - occlusionThreshold) * 100);
+    setStatus('👆 指をどけてください', `遮蔽: 約${occlusionPct}%（${allowedPct}%未満で認識）`);
+    detectRing.className = 'detect-ring detected';
+    stabilityFrames = Math.max(0, stabilityFrames - 1);
+    return;
+  }
+
+  // ---- STEP6: 安定カウント → キャプチャ ----
+  // モードに応じたガイドメッセージ
+  if (stabilityFrames === 0) {
+    if (isTopOnly && scanMode === 'normal') {
+      setStatus('📄 長いレシート（上半分）を検出', 'そのまま静止してください');
+    } else if (isBottomOnly && scanMode === 'waiting_bottom') {
+      setStatus('📄 下半分を検出！合成します', 'そのまま静止してください');
+    } else {
+      setStatus('📄 レシートを検出中…', 'そのまま静止してください');
+    }
+    detectRing.className = 'detect-ring detected';
+  }
+  stabilityFrames++;
+  updateProgress(stabilityFrames / STABILITY_THRESHOLD);
+  if (stabilityFrames >= STABILITY_THRESHOLD) {
+    triggerCapture({ isTopOnly, isBottomOnly, isFullReceipt });
+  }
+}
+
+function resetDetection() {
+  stabilityFrames = Math.max(0, stabilityFrames - 2);
+  if (stabilityFrames === 0) {
+    detectRing.className = 'detect-ring';
+    progressWrap.classList.remove('visible');
+    setStatus('🔍 レシートをかざしてください', 'レシート全体が画面内に入るようにしてください');
+  }
+}
+
+function updateProgress(ratio) {
+  progressWrap.classList.add('visible');
+  progressCircle.style.strokeDashoffset = 251 * (1 - ratio);
+  if (ratio > 0.5) detectRing.className = 'detect-ring stable';
+}
+
+async function triggerCapture({ isTopOnly, isBottomOnly, isFullReceipt } = {}) {
+  if (captureInProgress) return;
+  captureInProgress = true;
+  clearInterval(edgeDetectInterval);
+  stabilityFrames = 0;
+
+  // フル解像度でキャプチャ
+  const vw = video.videoWidth || 640;
+  const vh = video.videoHeight || 480;
+  canvas.width = vw; canvas.height = vh;
+  ctx.drawImage(video, 0, 0);
+  const base64Image = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+
+  progressWrap.classList.remove('visible');
+  detectRing.className = 'detect-ring';
+
+  // ---- 上半分のみ → 保留して下半分を待つ ----
+  if (isTopOnly && scanMode === 'normal') {
+    pendingTopImage = base64Image;
+    scanMode = 'waiting_bottom';
+
+    okFlash.classList.add('show');
+    setTimeout(() => okFlash.classList.remove('show'), 600);
+    setStatus('✅ 上半分OK！下半分をかざしてください', 'レシートを下にずらして下辺を映してください');
+    updateScanModeUI();
+
+    setTimeout(() => {
+      captureInProgress = false;
+      if (isScanning) startEdgeDetection();
+    }, 1200);
+    return;
+  }
+
+  // ---- 下半分のみ かつ 上半分が保留中 → 合成してAI送信 ----
+  if (isBottomOnly && scanMode === 'waiting_bottom' && pendingTopImage) {
+    okFlash.classList.add('show');
+    setStatus('✅ 下半分OK！合成中…', 'AIが仕訳中…');
+    setTimeout(() => okFlash.classList.remove('show'), 600);
+
+    receiptCount++;
+    countBadge.textContent = `${receiptCount} 枚`;
+    const cardId = `card-${Date.now()}`;
+    addProcessingCard(cardId, receiptCount, true);
+
+    // 2枚を縦に合成
+    const combinedBase64 = await combineImages(pendingTopImage, base64Image, vw, vh);
+    pendingTopImage = null;
+    scanMode = 'normal';
+    updateScanModeUI();
+
+    try {
+      const result = await analyzeReceipt(combinedBase64);
+      result.splitScan = true;
+      result._cardId = cardId;
+      capturedImages.set(cardId, combinedBase64);
+      replaceWithResult(cardId, result, receiptCount);
+      receipts.push(result);
+      btnExport.disabled = false;
+    } catch (e) {
+      replaceWithError(cardId, receiptCount, e.message);
+    }
+
+    setTimeout(() => {
+      captureInProgress = false;
+      if (isScanning) {
+        setStatus('🔍 レシートをかざしてください', '次のレシートをどうぞ');
+        startEdgeDetection();
+      }
+    }, 1500);
+    return;
+  }
+
+  // ---- 通常の1枚スキャン ----
+  okFlash.classList.add('show');
+  setStatus('✅ OK！次のレシートをどうぞ！', 'AIが仕訳中…');
+  setTimeout(() => okFlash.classList.remove('show'), 600);
+
+  receiptCount++;
+  countBadge.textContent = `${receiptCount} 枚`;
+  const cardId = `card-${Date.now()}`;
+  addProcessingCard(cardId, receiptCount, false);
+
+  // 下半分待ちモード中に通常レシートが来た場合は保留をクリア
+  if (scanMode === 'waiting_bottom') {
+    pendingTopImage = null;
+    scanMode = 'normal';
+    updateScanModeUI();
+  }
+
+  try {
+    const result = await analyzeReceipt(base64Image);
+    result._cardId = cardId;
+    capturedImages.set(cardId, base64Image);
+    replaceWithResult(cardId, result, receiptCount);
+    receipts.push(result);
+    btnExport.disabled = false;
+  } catch (e) {
+    replaceWithError(cardId, receiptCount, e.message);
+  }
+
+  setTimeout(() => {
+    captureInProgress = false;
+    if (isScanning) {
+      setStatus('🔍 レシートをかざしてください', '次のレシートをどうぞ');
+      startEdgeDetection();
+    }
+  }, 1500);
+}
+
+// 2枚の画像を縦に合成してbase64を返す
+async function combineImages(topBase64, bottomBase64, w, h) {
+  const offscreen = document.createElement('canvas');
+  offscreen.width = w;
+  offscreen.height = h * 2;
+  const octx = offscreen.getContext('2d');
+
+  await new Promise(res => {
+    const img1 = new Image();
+    img1.onload = () => { octx.drawImage(img1, 0, 0); res(); };
+    img1.src = 'data:image/jpeg;base64,' + topBase64;
+  });
+  await new Promise(res => {
+    const img2 = new Image();
+    img2.onload = () => { octx.drawImage(img2, 0, h); res(); };
+    img2.src = 'data:image/jpeg;base64,' + bottomBase64;
+  });
+
+  return offscreen.toDataURL('image/jpeg', 0.85).split(',')[1];
+}
+
+// スキャンモードに応じたUI更新
+function updateScanModeUI() {
+  const indicator = document.getElementById('splitIndicator');
+  if (scanMode === 'waiting_bottom') {
+    indicator.style.display = '';
+  } else {
+    indicator.style.display = 'none';
+  }
+}
+
+// ★ Netlify Function経由でAPIを呼ぶ
+async function analyzeReceipt(base64Image) {
+  const response = await fetch('/.netlify/functions/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image: base64Image })
+  });
+
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  const data = await response.json();
+  const text = data.content?.find(b => b.type === 'text')?.text || '{}';
+  const clean = text.replace(/```json|```/g, '').trim();
+  const parsed = JSON.parse(clean);
+  parsed.capturedAt = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return parsed;
+}
+
+function setStatus(main, sub) {
+  statusText.textContent = main;
+  statusSub.textContent = sub;
+}
+
+function addProcessingCard(id, num, isSplit) {
+  const existing = receiptList.querySelector('.empty-state');
+  if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.className = 'processing-card';
+  div.id = id;
+  div.innerHTML = `<div class="spinner"></div><div class="processing-text">レシート #${num} を AI が解析中…${isSplit ? '（上下合成）' : ''}</div>`;
+  receiptList.insertBefore(div, receiptList.firstChild);
+}
+
+function replaceWithResult(id, r, num) {
+  const card = document.getElementById(id);
+  if (!card) return;
+  card.className = 'receipt-card';
+  card.dataset.receiptId = id;
+  renderCard(card, r, num);
+}
+
+function renderCard(card, r, num) {
+  card.innerHTML = `
+    <div class="card-header">
+      <div class="card-header-left">
+        <div class="card-num">レシート #${num}${r.splitScan ? ' 〔合成〕' : ''}</div>
+        <div class="card-time">${r.capturedAt || ''}</div>
+      </div>
+      <div class="card-actions">
+        <button class="btn-card btn-card-edit" onclick="openEditModal('${card.id}')">編集</button>
+        <button class="btn-card btn-card-del" onclick="deleteCard('${card.id}')">削除</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="card-row"><span class="card-label">日付</span><span class="card-val">${r.date || '-'}</span></div>
+      <div class="card-row"><span class="card-label">店舗</span><span class="card-val">${r.store || '-'}</span></div>
+      <div class="card-row"><span class="card-label">金額</span><span class="card-val amount">¥${(r.amount||0).toLocaleString()}</span></div>
+      <div class="card-row"><span class="card-label">消費税</span><span class="card-val">¥${(r.tax||0).toLocaleString()}</span></div>
+      <div class="card-row"><span class="card-label">勘定科目</span><span class="card-val account">${r.account || '-'}</span></div>
+      <div class="card-row"><span class="card-label">経費区分</span><span class="card-val">${r.category || '-'}</span></div>
+      <div class="card-row"><span class="card-label">摘要</span><span class="card-val">${r.memo || '-'}</span></div>
+    </div>`;
+}
+
+// ---- 削除 ----
+function deleteCard(cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const idx = receipts.findIndex(r => r._cardId === cardId);
+  if (idx !== -1) receipts.splice(idx, 1);
+  capturedImages.delete(cardId);
+  card.style.transition = 'opacity 0.2s, transform 0.2s';
+  card.style.opacity = '0';
+  card.style.transform = 'translateX(20px)';
+  setTimeout(() => {
+    card.remove();
+    if (!receiptList.querySelector('.receipt-card')) {
+      receiptList.innerHTML = `<div class="empty-state"><div class="empty-icon">🧾</div>レシートをかざすと自動認識します</div>`;
+      btnExport.disabled = true;
+    }
+  }, 200);
+}
+
+// ---- 編集モーダル ----
+let editingCardId = null;
+
+function openEditModal(cardId) {
+  editingCardId = cardId;
+  const r = receipts.find(r => r._cardId === cardId) || {};
+  document.getElementById('edit-date').value     = r.date     || '';
+  document.getElementById('edit-store').value    = r.store    || '';
+  document.getElementById('edit-amount').value   = r.amount   || '';
+  document.getElementById('edit-tax').value      = r.tax      || '';
+  document.getElementById('edit-account').value  = r.account  || '';
+  document.getElementById('edit-category').value = r.category || '';
+  document.getElementById('edit-memo').value     = r.memo     || '';
+  document.getElementById('editModal').classList.add('open');
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').classList.remove('open');
+  editingCardId = null;
+}
+
+function saveEdit() {
+  if (!editingCardId) return;
+  const r = receipts.find(r => r._cardId === editingCardId);
+  if (!r) return;
+  r.date     = document.getElementById('edit-date').value;
+  r.store    = document.getElementById('edit-store').value;
+  r.amount   = parseFloat(document.getElementById('edit-amount').value) || 0;
+  r.tax      = parseFloat(document.getElementById('edit-tax').value) || 0;
+  r.account  = document.getElementById('edit-account').value;
+  r.category = document.getElementById('edit-category').value;
+  r.memo     = document.getElementById('edit-memo').value;
+
+  const card = document.getElementById(editingCardId);
+  const num = card.querySelector('.card-num').textContent.replace(/[^\d]/g, '');
+  renderCard(card, r, num);
+  closeEditModal();
+}
+
+// モーダル外タップで閉じる
+document.getElementById('editModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeEditModal();
+});
+
+function replaceWithError(id, num, msg) {
+  const card = document.getElementById(id);
+  if (!card) return;
+  card.className = 'receipt-card';
+  card.innerHTML = `
+    <div class="card-header"><div class="card-num">レシート #${num}</div></div>
+    <div style="color:#ff5252;font-size:13px;">読み取り失敗 — 再度かざしてください<br><small style="color:#64748b">${msg||''}</small></div>`;
+}
+
+async function exportCSV() {
+  if (!receipts.length) return;
+
+  const btn = document.getElementById('btnExport');
+  btn.textContent = '作成中…';
+  btn.disabled = true;
+
+  try {
+    const zip = new JSZip();
+    const date = new Date().toISOString().slice(0, 10);
+    const root = zip.folder('ReceiptScanOutput');
+    const imagesFolder = root.folder('images');
+
+    // CSV作成（カードIDも含める）
+    const header = ['ファイル名', '日付', '店舗', '金額', '消費税', '勘定科目', '経費区分', '摘要'];
+    const rows = receipts.map(r => {
+      const fname = r._cardId ? `${r._cardId}.jpg` : '';
+      return [fname, r.date||'', r.store||'', r.amount||'', r.tax||'', r.account||'', r.category||'', r.memo||''];
+    });
+    const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    root.file(`receipts_${date}.csv`, '\uFEFF' + csv);
+
+    // 画像ファイルをimagesフォルダに追加
+    for (const r of receipts) {
+      if (r._cardId && capturedImages.has(r._cardId)) {
+        const base64 = capturedImages.get(r._cardId);
+        imagesFolder.file(`${r._cardId}.jpg`, base64, { base64: true });
+      }
+    }
+
+    // ZIP生成＆ダウンロード
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ReceiptScanOutput_${date}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    alert('ZIP作成に失敗しました: ' + e.message);
+  } finally {
+    btn.textContent = 'ZIP 出力';
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
