@@ -615,7 +615,7 @@ function signOut() {
 async function fetchMe() {
   if (!authToken) return;
   try {
-    const res = await fetch('/.netlify/functions/me', {
+    const res = await fetch('/api/me', {
       headers: { 'Authorization': `Bearer ${authToken}` }
     });
     if (!res.ok) {
@@ -1229,7 +1229,7 @@ async function analyzeReceipt(base64Image) {
     signOut();
     throw new Error('未認証');
   }
-  const response = await fetch('/.netlify/functions/analyze', {
+  const response = await fetch('/api/analyze', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

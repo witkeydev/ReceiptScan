@@ -2,8 +2,8 @@
   "name": "receiptscan",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "dependencies": {
-    "@netlify/blobs": "^8.1.0",
     "jose": "^5.9.6"
   }
 }

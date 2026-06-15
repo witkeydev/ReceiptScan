@@ -1,44 +1,42 @@
-const { authenticate } = require('./_lib/auth');
-const { loadUser, saveUser, summarizeUser, planInfo, initBlobs } = require('./_lib/usage');
+import { authenticate } from '../_lib/auth.js';
+import { loadUser, saveUser, summarizeUser, planInfo } from '../_lib/usage.js';
 
-exports.handler = async (event) => {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
-  }
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-  initBlobs(event);
+export async function onRequestPost(context) {
+  const { request, env } = context;
 
-  const authResult = await authenticate(event);
+  const authResult = await authenticate(request, env);
   if (authResult.error) return authResult.error;
   const claims = authResult.claims;
 
-  const apiKey = process.env.WITKEY_RS_KEY;
+  const apiKey = env.WITKEY_RS_KEY;
   if (!apiKey) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'API key not configured' }) };
+    return new Response(JSON.stringify({ error: 'API key not configured' }), {
+      status: 500, headers: JSON_HEADERS
+    });
   }
 
   // ---- 使用量チェック ----
   let userCtx;
   try {
-    userCtx = await loadUser(claims.email);
+    userCtx = await loadUser(env.USERS, claims.email);
   } catch (e) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'Storage error: ' + e.message }) };
+    return new Response(JSON.stringify({ error: 'Storage error: ' + e.message }), {
+      status: 500, headers: JSON_HEADERS
+    });
   }
-  const { user, store, key } = userCtx;
+  const { user, kv, key } = userCtx;
   const info = planInfo(user.plan);
   if (user.usedCount >= info.limit) {
-    return {
-      statusCode: 402,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        error: 'Usage limit reached',
-        ...summarizeUser(user)
-      })
-    };
+    return new Response(JSON.stringify({
+      error: 'Usage limit reached',
+      ...summarizeUser(user)
+    }), { status: 402, headers: JSON_HEADERS });
   }
 
   try {
-    const { image } = JSON.parse(event.body);
+    const { image } = await request.json();
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -71,21 +69,16 @@ exports.handler = async (event) => {
     // 成功時のみカウント加算
     if (response.ok) {
       user.usedCount += 1;
-      try { await saveUser(store, key, user); } catch (e) { /* ログのみ */ }
+      try { await saveUser(kv, key, user); } catch (e) { /* ログのみ */ }
     }
 
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...data,
-        _usage: summarizeUser(user)
-      })
-    };
+    return new Response(JSON.stringify({
+      ...data,
+      _usage: summarizeUser(user)
+    }), { status: 200, headers: JSON_HEADERS });
   } catch (e) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: e.message })
-    };
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500, headers: JSON_HEADERS
+    });
   }
-};
+}
