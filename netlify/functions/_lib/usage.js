@@ -1,4 +1,12 @@
-const { getStore } = require('@netlify/blobs');
+const { getStore, connectLambda } = require('@netlify/blobs');
+
+// Lambda-compatible 関数では event を connectLambda に渡して
+// Blobs のコンテキスト (siteID/token) を初期化する必要がある
+function initBlobs(event) {
+  if (typeof connectLambda === 'function' && event) {
+    try { connectLambda(event); } catch (e) { /* 既に初期化済み等は無視 */ }
+  }
+}
 
 const PLANS = {
   free:  { id: 'free',  limit: 5,    label: '無料',         priceJpy: 0   },
@@ -74,5 +82,6 @@ module.exports = {
   normalizeEmail,
   loadUser,
   saveUser,
-  summarizeUser
+  summarizeUser,
+  initBlobs
 };

@@ -1,10 +1,12 @@
 const { authenticate } = require('./_lib/auth');
-const { loadUser, summarizeUser, PLANS } = require('./_lib/usage');
+const { loadUser, summarizeUser, PLANS, initBlobs } = require('./_lib/usage');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'GET') {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
+
+  initBlobs(event);
 
   const authResult = await authenticate(event);
   if (authResult.error) return authResult.error;
