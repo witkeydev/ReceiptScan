@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>レシート連続スキャン</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js" async defer></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
@@ -296,6 +298,63 @@
   .empty-icon { font-size: 32px; margin-bottom: 8px; }
 
   #captureCanvas { display: none; }
+
+  /* ---- ログイン画面 ---- */
+  .login-screen {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .login-screen.hidden { display: none; }
+  .login-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px 24px;
+    width: 100%; max-width: 360px;
+    text-align: center;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .login-logo { font-size: 24px; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+  .login-logo span { color: var(--text); }
+  .login-desc { font-size: 13px; color: var(--muted); margin-bottom: 24px; }
+  #googleBtnWrap { display: flex; justify-content: center; margin-bottom: 12px; min-height: 44px; }
+  .login-apple {
+    width: 100%;
+    padding: 11px;
+    background: #000;
+    color: #fff;
+    border: 1px solid #000;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: inherit;
+  }
+  .login-apple:active { opacity: 0.85; }
+  .login-apple svg { width: 14px; height: 16px; }
+  .login-error { font-size: 12px; color: #ff5252; margin-top: 14px; min-height: 16px; line-height: 1.4; }
+  .login-note { font-size: 11px; color: var(--muted); margin-top: 16px; line-height: 1.5; }
+
+  /* ヘッダー右側 */
+  .header-right { display: flex; align-items: center; gap: 8px; }
+  .btn-logout {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-logout:hover { color: var(--text); border-color: var(--muted); }
 </style>
 </head>
 <body>
@@ -304,7 +363,10 @@
   <!-- ヘッダー -->
   <div class="header">
     <div class="logo">Receipt<span>Scan</span></div>
-    <div class="count-badge" id="countBadge">0 枚</div>
+    <div class="header-right">
+      <div class="count-badge" id="countBadge">0 枚</div>
+      <button class="btn-logout" id="btnLogout" onclick="signOut()" style="display:none">ログアウト</button>
+    </div>
   </div>
 
   <!-- 分割スキャンバナー -->
@@ -406,7 +468,161 @@
 
 </div><!-- /app -->
 
+<!-- ログイン画面 -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+    <div class="login-logo">Receipt<span>Scan</span></div>
+    <div class="login-desc">続けるにはサインインしてください</div>
+    <div id="googleBtnWrap"></div>
+    <button class="login-apple" id="appleBtn" style="display:none">
+      <svg viewBox="0 0 14 16" fill="currentColor" aria-hidden="true">
+        <path d="M11.182 8.5c-.018-1.93 1.58-2.857 1.653-2.901-.901-1.314-2.302-1.493-2.798-1.515-1.191-.121-2.327.703-2.932.703-.617 0-1.55-.686-2.547-.667-1.31.019-2.516.762-3.19 1.938-1.36 2.36-.347 5.853.984 7.77.65.939 1.424 1.99 2.439 1.952.98-.04 1.35-.633 2.535-.633 1.183 0 1.519.633 2.554.611 1.054-.018 1.722-.954 2.367-1.897.747-1.087 1.054-2.142 1.071-2.197-.024-.011-2.055-.788-2.073-3.123zm-1.92-5.733c.542-.658.908-1.572.808-2.481-.781.032-1.728.521-2.289 1.178-.503.58-.943 1.508-.825 2.402.871.067 1.762-.443 2.306-1.099z"/>
+      </svg>
+      Appleでサインイン
+    </button>
+    <div class="login-error" id="loginError"></div>
+    <div class="login-note">このアプリは認証されたユーザーのみ利用できます</div>
+  </div>
+</div>
+
 <script>
+// ============================================================
+// OAuth 設定（Google Cloud Console / Apple Developer で取得した値）
+// ============================================================
+const AUTH_CONFIG = {
+  // Google Cloud Console → 認証情報 → OAuth 2.0 クライアント ID（ウェブ アプリケーション）
+  googleClientId: '',
+  // Apple Developer → Identifiers → Services IDs
+  appleClientId: '',
+  // Apple サインインのリダイレクトURI（Apple Developer で登録した値と一致させる）
+  appleRedirectURI: window.location.origin + '/'
+};
+
+let authToken = null;
+let authUser = null;
+
+function showLogin(msg) {
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('btnLogout').style.display = 'none';
+  document.getElementById('loginError').textContent = msg || '';
+}
+function hideLogin() {
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('btnLogout').style.display = '';
+  document.getElementById('loginError').textContent = '';
+}
+
+function signOut() {
+  authToken = null;
+  authUser = null;
+  sessionStorage.removeItem('rs_auth');
+  if (stream) stopCamera();
+  showLogin();
+}
+
+function persistAuth() {
+  sessionStorage.setItem('rs_auth', JSON.stringify({ token: authToken, user: authUser }));
+}
+
+function decodeJwtPayload(jwt) {
+  const [, payload] = jwt.split('.');
+  if (!payload) return null;
+  const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+  return JSON.parse(decodeURIComponent(escape(json)));
+}
+
+function restoreAuth() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('rs_auth') || 'null');
+    if (!saved?.token) return false;
+    const claims = decodeJwtPayload(saved.token);
+    if (!claims || claims.exp * 1000 < Date.now()) return false;
+    authToken = saved.token;
+    authUser = saved.user;
+    return true;
+  } catch { return false; }
+}
+
+window.handleGoogleCredential = (resp) => {
+  authToken = resp.credential;
+  try {
+    const claims = decodeJwtPayload(authToken);
+    authUser = { email: claims.email, name: claims.name, provider: 'google' };
+  } catch { authUser = { provider: 'google' }; }
+  persistAuth();
+  hideLogin();
+};
+
+async function handleAppleSignIn() {
+  try {
+    const data = await AppleID.auth.signIn();
+    authToken = data.authorization.id_token;
+    let email = data.user?.email;
+    try {
+      const claims = decodeJwtPayload(authToken);
+      email = email || claims.email;
+    } catch {}
+    authUser = { email, provider: 'apple' };
+    persistAuth();
+    hideLogin();
+  } catch (e) {
+    if (e?.error && e.error !== 'popup_closed_by_user') {
+      document.getElementById('loginError').textContent = 'Appleサインインに失敗しました：' + e.error;
+    }
+  }
+}
+
+function initAuth() {
+  if (!AUTH_CONFIG.googleClientId && !AUTH_CONFIG.appleClientId) {
+    showLogin('AUTH_CONFIG.googleClientId / appleClientId を index.html に設定してください');
+    return;
+  }
+  if (restoreAuth()) {
+    hideLogin();
+  } else {
+    showLogin();
+  }
+  if (window.google?.accounts?.id && AUTH_CONFIG.googleClientId) {
+    google.accounts.id.initialize({
+      client_id: AUTH_CONFIG.googleClientId,
+      callback: window.handleGoogleCredential
+    });
+    google.accounts.id.renderButton(
+      document.getElementById('googleBtnWrap'),
+      { theme: 'filled_black', size: 'large', shape: 'pill', text: 'signin_with', logo_alignment: 'center' }
+    );
+  }
+  if (window.AppleID && AUTH_CONFIG.appleClientId) {
+    AppleID.auth.init({
+      clientId: AUTH_CONFIG.appleClientId,
+      scope: 'name email',
+      redirectURI: AUTH_CONFIG.appleRedirectURI,
+      usePopup: true
+    });
+    const btn = document.getElementById('appleBtn');
+    btn.style.display = '';
+    btn.addEventListener('click', handleAppleSignIn);
+  }
+}
+
+// GIS / Apple SDK の非同期ロードを待ってから initAuth を呼ぶ
+let _gisReady = !AUTH_CONFIG.googleClientId;
+let _appleReady = !AUTH_CONFIG.appleClientId;
+let _initDone = false;
+function _maybeInit() {
+  if (_initDone) return;
+  if (_gisReady && _appleReady) { _initDone = true; initAuth(); }
+}
+window.onGoogleLibraryLoad = () => { _gisReady = true; _maybeInit(); };
+(function waitApple() {
+  if (window.AppleID) { _appleReady = true; _maybeInit(); }
+  else setTimeout(waitApple, 100);
+})();
+// フォールバック：3秒以内にライブラリが読み込まれなくても初期化
+setTimeout(() => { _gisReady = true; _appleReady = true; _maybeInit(); }, 3000);
+
+// ============================================================
+
 let stream = null;
 let isScanning = false;
 let stabilityFrames = 0;
@@ -824,12 +1040,23 @@ function updateScanModeUI() {
 
 // ★ Netlify Function経由でAPIを呼ぶ
 async function analyzeReceipt(base64Image) {
+  if (!authToken) {
+    signOut();
+    throw new Error('未認証');
+  }
   const response = await fetch('/.netlify/functions/analyze', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${authToken}`
+    },
     body: JSON.stringify({ image: base64Image })
   });
 
+  if (response.status === 401 || response.status === 403) {
+    signOut();
+    throw new Error('セッションが切れました。再ログインしてください');
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
   const data = await response.json();
