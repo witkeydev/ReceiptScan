@@ -1254,7 +1254,12 @@ async function analyzeReceipt(base64Image) {
     openPlanModal();
     throw new Error('今月の利用上限に達しました');
   }
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.json()).error || ''; } catch {}
+    console.warn(`[/analyze] HTTP ${response.status}: ${detail}`);
+    throw new Error(`HTTP ${response.status}${detail ? ': ' + detail : ''}`);
+  }
 
   const data = await response.json();
   if (data._usage) applyUsageFromResponse(data._usage);
