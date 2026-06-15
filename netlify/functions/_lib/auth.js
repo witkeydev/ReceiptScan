@@ -1,7 +1,7 @@
 const { jwtVerify, createRemoteJWKSet } = require('jose');
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const APPLE_CLIENT_ID = process.env.APPLE_CLIENT_ID;
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
+const APPLE_CLIENT_ID = (process.env.APPLE_CLIENT_ID || '').trim();
 const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '')
   .split(',')
   .map(s => s.trim().toLowerCase())

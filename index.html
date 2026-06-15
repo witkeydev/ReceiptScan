@@ -619,8 +619,14 @@ async function fetchMe() {
       headers: { 'Authorization': `Bearer ${authToken}` }
     });
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) { signOut(); return; }
-      throw new Error('HTTP ' + res.status);
+      let detail = '';
+      try { detail = (await res.json()).error || ''; } catch {}
+      console.warn(`[/me] HTTP ${res.status}: ${detail}`);
+      // 本物のトークン期限切れのみサインアウト。サーバー設定エラー等では維持
+      if ((res.status === 401 || res.status === 403) && isTokenExpired()) {
+        signOut();
+      }
+      return;
     }
     userState = await res.json();
     updateUsageBadge();
@@ -694,6 +700,15 @@ function decodeJwtPayload(jwt) {
   if (!payload) return null;
   const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
   return JSON.parse(decodeURIComponent(escape(json)));
+}
+
+// IDトークンの exp が過去か（true=セッション期限切れ）
+function isTokenExpired() {
+  if (!authToken) return true;
+  try {
+    const claims = decodeJwtPayload(authToken);
+    return !claims?.exp || claims.exp * 1000 < Date.now();
+  } catch { return true; }
 }
 
 function restoreAuth() {
@@ -1224,8 +1239,14 @@ async function analyzeReceipt(base64Image) {
   });
 
   if (response.status === 401 || response.status === 403) {
-    signOut();
-    throw new Error('セッションが切れました。再ログインしてください');
+    let detail = '';
+    try { detail = (await response.json()).error || ''; } catch {}
+    console.warn(`[/analyze] HTTP ${response.status}: ${detail}`);
+    if (isTokenExpired()) {
+      signOut();
+      throw new Error('セッションが切れました。再ログインしてください');
+    }
+    throw new Error(`認証エラー (HTTP ${response.status}): ${detail || 'Netlifyの環境変数を確認してください'}`);
   }
   if (response.status === 402) {
     const usage = await response.json();
