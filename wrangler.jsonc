@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "receipt-scanner",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "GOOGLE_CLIENT_ID": "279975936738-6t4ek541h973sqttis269p3m4vtvio3a.apps.googleusercontent.com"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "USERS",
+      "id": "a5217cabd1e442fb9961cdfb9ef998fc"
+    }
+  ]
+}
